@@ -1,0 +1,22 @@
+{
+    "name": "amirxd/php-ultra-request",
+    "description": "A powerful HTTP client library for PHP",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Amirxd",
+            "email": "amirxd4488@gmail.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.0",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Amirxd\\UltraRequest\\": "src/"
+        }
+    }
+}
