@@ -36,7 +36,7 @@ A powerful, feature-rich HTTP client library for PHP with full cURL support, coo
 ### Via Composer
 
 ```bash
-composer require amirxd/php-ultra-request
+composer require amirxd/php-ultra-request:dev-main
 ```
 
 ### Manual Installation
