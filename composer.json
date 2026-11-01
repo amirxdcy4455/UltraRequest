@@ -1,6 +1,6 @@
 {
     "name": "amirxd/php-ultra-request",
-    "description": "A powerful HTTP client library for PHP",
+    "description": "Mutable PHP HTTP client with middleware, concurrent request pools, and cURL streaming support.",
     "type": "library",
     "license": "MIT",
     "authors": [
@@ -18,5 +18,20 @@
         "psr-4": {
             "Amirxd\\UltraRequest\\": "src/"
         }
+    },
+    "keywords": [
+        "http-client",
+        "curl",
+        "http",
+        "concurrent",
+        "request-pool",
+        "middleware",
+        "request",
+        "downloader",
+        "cookies",
+        "proxy"
+    ],
+    "scripts": {
+        "test": "php tests/run.php"
     }
 }

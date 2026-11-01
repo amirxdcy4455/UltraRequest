@@ -7,6 +7,9 @@ class BasicAuth implements AuthInterface {
     private string $password;
     
     public function __construct(string $username, string $password) {
+        if (str_contains($username, ':')) {
+            throw new \InvalidArgumentException('Basic authentication usernames cannot contain a colon.');
+        }
         $this->username = $username;
         $this->password = $password;
     }

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Amirxd\UltraRequest\File;
 
 use Amirxd\UltraRequest\Request\Request;
@@ -27,8 +29,13 @@ class Downloader {
     private int $maxSpeedHistory = 5;
     
     public function __construct(string $url, ?string $savePath = null) {
+        $parts = parse_url($url);
+        if ($parts === false || empty($parts['host']) || !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)) {
+            throw new \InvalidArgumentException('Downloader URL must be an absolute HTTP or HTTPS URL.');
+        }
         $this->url = $url;
         
+        if ($savePath !== null && $savePath === '') throw new \InvalidArgumentException('Save path cannot be empty.');
         if ($savePath === null) {
             $this->filename = basename(parse_url($url, PHP_URL_PATH)) ?: 'download';
             $this->savePath = getcwd() . DIRECTORY_SEPARATOR . $this->filename;
@@ -37,57 +44,56 @@ class Downloader {
             $this->filename = basename($savePath);
         }
         
-        $this->consoleMode = (php_sapi_name() === 'cli');
+        $this->consoleMode = false;
     }
     
     public function withResume(bool $resume = true): self {
-        $clone = clone $this;
-        $clone->resume = $resume;
-        return $clone;
+        $this->resume = $resume;
+        return $this;
     }
     
     public function withProgress(callable $callback): self {
-        $clone = clone $this;
-        $clone->progressCallback = $callback;
-        return $clone;
+        $this->progressCallback = $callback;
+        return $this;
     }
     
     public function withConsoleProgress(int $barWidth = 50): self {
-        $clone = clone $this;
-        $clone->consoleMode = true;
-        $clone->barWidth = $barWidth;
-        return $clone;
+        $this->consoleMode = true;
+        $this->barWidth = max(5, $barWidth);
+        return $this;
     }
     
     public function withChunkSize(int $bytes): self {
-        $clone = clone $this;
-        $clone->chunkSize = $bytes;
-        return $clone;
+        if ($bytes < 1) throw new \InvalidArgumentException("Chunk size must be positive.");
+        $this->chunkSize = $bytes;
+        return $this;
     }
     
     public function withHeader(string $name, string $value): self {
-        $clone = clone $this;
-        $clone->headers[$name] = $value;
-        return $clone;
+        if ($name === "" || preg_match('/[^!#$%&\'*+.^_`|~0-9A-Za-z-]/', $name) || preg_match('/[\r\n]/', $value)) throw new \InvalidArgumentException("Invalid header.");
+        foreach (array_keys($this->headers) as $existing) if (strcasecmp((string)$existing, $name) === 0) unset($this->headers[$existing]);
+        $this->headers[$name] = $value;
+        return $this;
     }
     
     public function withHeaders(array $headers): self {
-        $clone = clone $this;
-        $clone->headers = array_merge($clone->headers, $headers);
-        return $clone;
+        foreach ($headers as $name => $value) {
+            if (!is_string($name) || (!is_string($value) && !is_numeric($value))) throw new \InvalidArgumentException('Headers must be an associative array of string values.');
+            $this->withHeader($name, (string)$value);
+        }
+        return $this;
     }
     
     public function withOverwrite(bool $overwrite = true): self {
-        $clone = clone $this;
-        $clone->overwrite = $overwrite;
-        return $clone;
+        $this->overwrite = $overwrite;
+        return $this;
     }
     
     public function withRetries(int $maxRetries, int $delaySeconds = 1): self {
-        $clone = clone $this;
-        $clone->maxRetries = $maxRetries;
-        $clone->retryDelay = $delaySeconds;
-        return $clone;
+        if ($maxRetries < 1 || $delaySeconds < 0) throw new \InvalidArgumentException("Retries must be positive and delay cannot be negative.");
+        $this->maxRetries = $maxRetries;
+        $this->retryDelay = $delaySeconds;
+        return $this;
     }
     
     public function getUrl(): string {
@@ -103,63 +109,132 @@ class Downloader {
     }
     
     public function canResume(): bool {
-        return $this->resume && file_exists($this->savePath);
+        return $this->resume && is_file($this->getPartPath());
     }
-    
+
+    public function getPartPath(): string {
+        return $this->savePath . '.part';
+    }
+
     public function getExistingSize(): int {
-        if ($this->canResume()) {
-            return filesize($this->savePath);
-        }
-        return 0;
+        $path = $this->getPartPath();
+        return $this->canResume() && is_file($path) ? (int)filesize($path) : 0;
     }
-    
+
+    public function getChunkSize(): int {
+        return $this->chunkSize;
+    }
+
     public function getRequest(): Request {
         $request = Request::get($this->url);
-        
-        foreach ($this->headers as $name => $value) {
-            $request = $request->withHeader($name, $value);
-        }
-        
-        if ($this->canResume()) {
-            $existingSize = $this->getExistingSize();
-            $request = $request->withHeader('Range', "bytes=$existingSize-");
-        }
-        
+        $request->withHeaders($this->headers);
+        $request->withHeader('Accept-Encoding', 'identity');
+        if ($this->canResume()) $request->withHeader('Range', 'bytes=' . $this->getExistingSize() . '-');
         return $request;
     }
-    
+
     public function shouldDownload(): bool {
-        if (!$this->overwrite && file_exists($this->savePath) && !$this->resume) {
+        return $this->overwrite || !file_exists($this->savePath);
+    }
+
+    public function save(HttpResponse $response): bool {
+        if (!in_array($response->getStatusCode(), [200, 206], true) || $response->getBody() === null) return false;
+        if (!$this->shouldDownload()) return false;
+        $directory = dirname($this->savePath);
+        if (!is_dir($directory) && !@mkdir($directory, 0755, true) && !is_dir($directory)) return false;
+        $offset = $this->getExistingSize();
+        $contentRange = null;
+        if ($response->getStatusCode() === 200) {
+            $contentLength = $response->getHeader('Content-Length');
+            if ($contentLength !== null && ctype_digit($contentLength) && strlen($response->getBody()) !== (int)$contentLength) return false;
+        }
+        if ($response->getStatusCode() === 206) {
+            $contentRange = $this->getContentRange($response);
+            if ($contentRange === null || $contentRange['start'] !== $offset) return false;
+            $bodyLength = strlen($response->getBody());
+            if ($bodyLength !== ($contentRange['end'] - $contentRange['start'] + 1)) return false;
+            if ($contentRange['total'] !== null && $contentRange['end'] >= $contentRange['total']) return false;
+        } else {
+            $offset = 0;
+        }
+        $handle = fopen($this->getPartPath(), $offset > 0 ? 'ab' : 'wb');
+        if ($handle === false) return false;
+        try {
+            $body = $response->getBody();
+            $written = 0;
+            $length = strlen($body);
+            while ($written < $length) {
+                $count = fwrite($handle, substr($body, $written, $this->chunkSize));
+                if ($count === false || $count === 0) return false;
+                $written += $count;
+            }
+        } finally {
+            fclose($handle);
+        }
+        if ($contentRange !== null && ($contentRange['total'] === null || (int)filesize($this->getPartPath()) < $contentRange['total'])) {
+            return true;
+        }
+        try {
+            $this->finishDownload();
+        } catch (\Throwable) {
             return false;
         }
         return true;
     }
-    
-    public function save(HttpResponse $response): bool {
-        if (!$response->isSuccessful() && $response->getStatusCode() !== 206) {
-            return false;
-        }
-        
-        $dir = dirname($this->savePath);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0777, true);
-        }
-        
-        $mode = $this->canResume() ? 'ab' : 'wb';
-        $fp = fopen($this->savePath, $mode);
-        
-        if ($fp === false) {
-            return false;
-        }
-        
-        $bytesWritten = fwrite($fp, $response->getBody());
-        fclose($fp);
-        
-        return $bytesWritten !== false;
+
+    public function getContentRange(HttpResponse $response): ?array {
+        $value = $response->getHeader('Content-Range');
+        if ($value === null || !preg_match('/^bytes (\d+)-(\d+)\/(\d+|\*)$/i', trim($value), $matches)) return null;
+        $start = (int)$matches[1];
+        $end = (int)$matches[2];
+        if ($end < $start) return null;
+        return ['start' => $start, 'end' => $end, 'total' => $matches[3] === '*' ? null : (int)$matches[3]];
     }
-    
+
+    public function validatePartialResponse(HttpResponse $response, int $requestedOffset): bool {
+        $range = $this->getContentRange($response);
+        if ($range === null || $range['start'] !== $requestedOffset) return false;
+        if ($range['total'] !== null && $range['end'] >= $range['total']) return false;
+        $expectedSize = $range['end'] + 1;
+        return is_file($this->getPartPath()) && (int)filesize($this->getPartPath()) === $expectedSize;
+    }
+
+    public function isCompleteFromRange(HttpResponse $response): bool {
+        $value = $response->getHeader('Content-Range');
+        if ($value === null || !preg_match('/^bytes \*\/(\d+)$/i', trim($value), $matches)) return false;
+        return $this->canResume() && $this->getExistingSize() === (int)$matches[1];
+    }
+
+    public function finishDownload(): void {
+        $part = $this->getPartPath();
+        if (!is_file($part)) throw new \RuntimeException('Download temporary file does not exist.');
+        if (file_exists($this->savePath) && !$this->overwrite) throw new \RuntimeException('Destination file already exists.');
+        if (@rename($part, $this->savePath)) return;
+
+        if (!file_exists($this->savePath) || !$this->overwrite) {
+            throw new \RuntimeException('Unable to finalize downloaded file.');
+        }
+
+        $backup = $this->savePath . '.backup-' . bin2hex(random_bytes(6));
+        if (!@rename($this->savePath, $backup)) {
+            throw new \RuntimeException('Unable to move the existing destination file safely.');
+        }
+        if (!@rename($part, $this->savePath)) {
+            @rename($backup, $this->savePath);
+            throw new \RuntimeException('Unable to finalize downloaded file; the previous file was restored.');
+        }
+        @unlink($backup);
+    }
+
+    public function resetProgress(): void {
+        $this->lastPercent = -1;
+        $this->lastBytes = 0;
+        $this->lastTime = 0.0;
+        $this->speedHistory = [];
+    }
+
     public function getProgress(float $downloaded, float $total): array {
-        $percent = $total > 0 ? round(($downloaded / $total) * 100, 2) : 0;
+        $percent = $total > 0 ? round(min(100, max(0, ($downloaded / $total) * 100)), 2) : 0;
         
         $downloadedFormatted = $this->formatBytes($downloaded);
         $totalFormatted = $total > 0 ? $this->formatBytes($total) : 'unknown';

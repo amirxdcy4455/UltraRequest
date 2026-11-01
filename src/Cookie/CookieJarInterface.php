@@ -8,7 +8,7 @@ interface CookieJarInterface {
     public function getAllCookies(): array;
     public function hasCookie(string $name): bool;
     public function removeCookie(string $name): self;
-    public function fromString(string $cookieString, string $domain = ''): self;
+    public function fromString(string $cookieString, string $domain = '', string $requestPath = '/'): self;
     public function match(string $url): array;
     public function toHeader(): string;
     public function clear(): self;

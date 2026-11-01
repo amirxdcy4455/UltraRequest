@@ -1,682 +1,434 @@
 # PHP Ultra Request
 
-[![PHP Version](https://img.shields.io/badge/PHP-8.0%2B-777BB4?style=flat-square&logo=php)](https://php.net)
-[![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
-[![Packagist](https://img.shields.io/badge/Packagist-amirxd%2Fphp--ultra--request-blue?style=flat-square)](https://packagist.org/packages/amirxd/php-ultra-request)
+A lightweight PHP HTTP client built on cURL. It provides request/response objects, authentication, scoped cookies, proxy support, manual redirect handling, and streamed file downloads.
 
-A powerful, feature-rich HTTP client library for PHP with full cURL support, cookie management, proxy handling, authentication, and advanced file downloading capabilities.
+## Features
 
----
+- HTTP methods: GET, POST, PUT, PATCH, DELETE, HEAD
+- Concurrent HTTP requests using `curl_multi` with a configurable concurrency limit
+- Named `RequestPool` collections and independent per-request redirect/error handling
+- Lifecycle middleware shared by single and concurrent requests, with request, response, error, and short-circuit hooks
+- Mutable fluent Request and Client configuration (no clone-per-method behavior)
+- Basic, Bearer, and API Key authentication (header or query placement)
+- Redirect handling with method preservation and cross-origin credential protection
+- CookieJar with host-only/domain/path/secure matching, Max-Age, persistence, and repeated `Set-Cookie` support
+- HTTP, HTTPS, SOCKS4, and SOCKS5 proxies
+- Streamed downloads, `.part` temporary files, validated resume, partial-range continuation, retries, and progress callbacks
+- JSON response helpers and access to repeated response headers
 
-## ✨ Features
+## Requirements
 
-- **🔌 Full cURL Integration** - Leverages PHP's cURL extension for maximum performance
-- **🍪 Cookie Management** - Full cookie jar with persistence, parsing, and domain/path matching
-- **🌐 Proxy Support** - HTTP, HTTPS, SOCKS4, SOCKS5 proxies with authentication
-- **🔐 Authentication** - Basic, Bearer Token, and API Key authentication methods
-- **📥 Advanced Downloader** - Resume support, progress tracking, console progress bar, retry mechanism
-- **🔄 Manual Redirect Handling** - RFC 7231 compliant, preserves method semantics (301/302/307/308)
-- **🧹 Clean Architecture** - PSR-4 compliant, fully object-oriented with interfaces
-- **⚡ Fluent Interface** - Method chaining for elegant API usage
-- **🧪 JSON Support** - Automatic JSON encoding/decoding with type safety
-- **🔒 SSL Verification** - Optional SSL verification for development/secure environments
+- PHP 8.0+
+- `ext-curl`
+- `ext-json`
 
----
-
-## 📋 Requirements
-
-- PHP 8.0 or higher
-- cURL extension (`ext-curl`)
-- JSON extension (`ext-json`)
-
----
-
-## 🚀 Installation
-
-### Via Composer
+## Installation
 
 ```bash
-composer require amirxd/php-ultra-request:dev-main
+composer require amirxd/php-ultra-request
 ```
 
-### Manual Installation
+Or clone the repository and run `composer install`.
 
-```bash
-git clone https://github.com/amirxd/php-ultra-request.git
-cd php-ultra-request
-composer install
-```
-
----
-
-## 📖 Quick Start
-
-### Basic GET Request
+## Quick start
 
 ```php
 <?php
 
-require_once 'vendor/autoload.php';
+require __DIR__ . '/vendor/autoload.php';
 
 use Amirxd\UltraRequest\UltraRequest;
 
 $http = new UltraRequest();
-
 $response = $http->get('https://api.github.com/users/amirxd');
 
 if ($response->isSuccessful()) {
-    $data = $response->getJson();
-    echo "User: " . ($data['name'] ?? 'N/A') . "\n";
-    echo "Bio: " . ($data['bio'] ?? 'N/A') . "\n";
+    $user = $response->getJsonOrFail();
+    echo $user['login'] ?? 'unknown';
 }
 ```
 
-### POST Request with JSON
+The `UltraRequest` facade also exposes `post()`, `put()`, `patch()`, `delete()`, and `head()`. For full control, use `Client` and `Request` directly.
+
+## Mutable fluent API
+
+All configuration methods mutate the current instance and return the same object. They do **not** clone it.
 
 ```php
-<?php
-
-use Amirxd\UltraRequest\UltraRequest;
-
-$http = new UltraRequest();
-
-$data = [
-    'title' => 'New Post',
-    'body' => 'Lorem ipsum dolor sit amet',
-    'userId' => 1
-];
-
-$response = $http->post(
-    'https://jsonplaceholder.typicode.com/posts',
-    json_encode($data),
-    ['Content-Type' => 'application/json']
-);
-
-if ($response->isSuccessful()) {
-    $result = $response->getJson();
-    echo "Created post ID: " . $result['id'] . "\n";
-}
-```
-
-### Using the Fluent Request Builder
-
-```php
-<?php
-
-use Amirxd\UltraRequest\Request\Request;
 use Amirxd\UltraRequest\Client\Client;
+use Amirxd\UltraRequest\Request\Request;
 
 $client = new Client();
-$request = Request::post('https://api.example.com/users')
-    ->withHeader('X-API-Key', 'your-api-key-here')
-    ->withJson(['name' => 'John Doe', 'email' => 'john@example.com'])
-    ->withQueryParams(['source' => 'web']);
+$client->withBearerAuth('your-token')->withTimeout(45)->withConnectTimeout(10);
+
+$request = Request::post('https://api.example.com/users');
+$request->withHeader('Accept', 'application/json')
+        ->withJson(['name' => 'Amir'])
+        ->withQueryParams(['source' => 'dashboard']);
 
 $response = $client->send($request);
 ```
 
----
+`with...()` naming is retained for API familiarity, but these methods are state-changing. Use a new `Client`, `Request`, or `Downloader` instance when you need an independent configuration.
 
-## 🔐 Authentication
+Request setters such as `setHeader()`, `setBody()`, `setJson()`, `setQueryParams()`, `setFollowRedirects()`, and `setMaxRedirects()` are also available.
 
-### Basic Authentication
+## Authentication
 
 ```php
-<?php
+$client->withBasicAuth('username', 'password');
+$client->withBearerAuth('access-token');
+$client->withApiKey('X-API-Key', 'secret-key', 'header');
 
-use Amirxd\UltraRequest\UltraRequest;
-
-$http = new UltraRequest();
-$client = $http->getClient()->withBasicAuth('username', 'password');
-
-$response = $client->send(
-    Request::get('https://api.example.com/protected')
-);
+// API key in the URL query string:
+$client->withApiKey('api_key', 'secret-key', 'query');
 ```
 
-### Bearer Token (OAuth2)
+You can also configure `AuthManager` with `withAuth()`:
 
 ```php
-<?php
-
-use Amirxd\UltraRequest\UltraRequest;
-
-$http = new UltraRequest();
-$client = $http->getClient()->withBearerAuth('your-token-here');
-
-$response = $client->send(
-    Request::get('https://api.example.com/user')
-);
-```
-
-### API Key Authentication
-
-```php
-<?php
-
-use Amirxd\UltraRequest\Auth\AuthManager;
-use Amirxd\UltraRequest\Client\Client;
-
-$auth = new AuthManager();
-$auth->apiKey('X-API-Key', 'your-api-key', 'header');
-
-$client = (new Client())->withAuth(function($manager) {
-    $manager->apiKey('X-API-Key', 'your-api-key', 'header');
-});
-
-$response = $client->send(
-    Request::get('https://api.example.com/protected')
-);
-```
-
-### Using AuthManager with Fluent API
-
-```php
-<?php
-
-use Amirxd\UltraRequest\Client\Client;
-
-$client = new Client();
-$client = $client->withAuth(function($auth) {
-    $auth->basic('username', 'password');
-    // OR
-    $auth->bearer('your-token-here');
-    // OR
-    $auth->apiKey('X-API-Key', 'your-key', 'header');
+$client->withAuth(function ($auth): void {
+    $auth->bearer('access-token');
 });
 ```
 
----
+Query-string API keys can appear in server logs, proxy logs, and URL histories. Prefer header placement whenever the remote API supports it.
 
-## 🍪 Cookie Management
+## Concurrent requests
 
-### Basic Cookie Usage
+`Client::sendMany()` executes multiple independent requests concurrently with PHP's cURL multi interface. It does not create PHP threads or processes; libcurl multiplexes the network transfers while PHP manages a bounded set of active handles.
 
 ```php
-<?php
-
-use Amirxd\UltraRequest\Cookie\CookieJar;
 use Amirxd\UltraRequest\Client\Client;
 use Amirxd\UltraRequest\Request\Request;
 
-$cookieJar = new CookieJar('cookies.json', true); // Auto-load from file
-$client = (new Client())->withCookieJar($cookieJar);
+$client = new Client();
+$client->withTimeout(20);
 
-// Cookies will be automatically saved and loaded
-$response = $client->send(Request::get('https://example.com'));
+$results = $client->sendMany([
+    'profile' => Request::get('https://api.example.com/profile'),
+    'posts' => Request::get('https://api.example.com/posts'),
+    'comments' => Request::get('https://api.example.com/comments'),
+], concurrency: 3);
 
-// Manually set a cookie
-$cookieJar->setCookie('session_id', 'abc123', [
-    'domain' => '.example.com',
-    'path' => '/',
-    'expires' => time() + 3600,
+foreach ($results as $key => $result) {
+    if ($result instanceof \Throwable) {
+        printf("%s failed: %s\n", $key, $result->getMessage());
+        continue;
+    }
+
+    printf("%s returned HTTP %d\n", $key, $result->getStatusCode());
+}
+```
+
+The result array preserves the original request keys and order. Every value is either an `HttpResponse` or a `Throwable` for that individual request. A DNS, TLS, timeout, or other transport failure for one request does not cancel the remaining requests. HTTP error statuses such as 404 and 500 are normal `HttpResponse` objects; inspect their status codes or use `isClientError()` / `isServerError()`.
+
+For a reusable collection, use `RequestPool`:
+
+```php
+use Amirxd\UltraRequest\Client\Client;
+use Amirxd\UltraRequest\Client\RequestPool;
+use Amirxd\UltraRequest\Request\Request;
+
+$pool = new RequestPool();
+$pool->add('profile', Request::get('https://api.example.com/profile'));
+$pool->add('posts', Request::get('https://api.example.com/posts'));
+$pool->addRequest(Request::get('https://api.example.com/notifications'));
+
+$results = (new Client())->sendPool($pool, concurrency: 2);
+```
+
+`sendMany()` also accepts a `RequestPool` directly. The concurrency argument is the maximum number of active cURL transfers at a time; it must be at least 1 and defaults to 5. Each request retains its own redirect counter and redirect policy. Cross-origin redirects apply the same credential-stripping rules as `send()`.
+
+Do not use a concurrent pool for requests that depend on the result of another request. A shared CookieJar is supported, but a response cookie can only affect requests that have not started yet; requests already active in the same batch cannot retroactively receive it. Use sequential `send()` calls for login flows or other session-dependent chains. Response bodies are buffered in memory just like regular `send()` responses; use the streamed Downloader for large files.
+
+The `UltraRequest` facade also exposes `sendMany()` and `sendPool()` as convenience methods.
+
+## Middleware system
+
+The client supports a lifecycle-based middleware pipeline shared by `send()`, `sendMany()`, and `RequestPool`. This phase-based design allows middleware to work with both normal requests and `curl_multi` requests without forcing concurrent transfers to run sequentially.
+
+### Registering middleware
+
+```php
+use Amirxd\UltraRequest\Client\Client;
+use Amirxd\UltraRequest\Middleware\AbstractMiddleware;
+use Amirxd\UltraRequest\Middleware\RequestContext;
+use Amirxd\UltraRequest\Response\HttpResponse;
+use Amirxd\UltraRequest\Request\Request;
+use Throwable;
+
+$client = new Client();
+
+$client->addMiddleware(new class extends AbstractMiddleware {
+    public function before(RequestContext $context): void
+    {
+        $request = $context->getRequest();
+
+        if ($request instanceof Request) {
+            $request->withHeader('X-Application', 'UltraRequest');
+        }
+    }
+
+    public function after(RequestContext $context, HttpResponse $response): HttpResponse
+    {
+        // Inspect or replace the response here.
+        return $response;
+    }
+
+    public function onError(RequestContext $context, Throwable $error): HttpResponse|Throwable
+    {
+        // Return the error to keep failing, or an HttpResponse to recover.
+        return $error;
+    }
+});
+
+$response = $client->send(Request::get('https://api.example.com/profile'));
+```
+
+Implement `MiddlewareInterface` directly when all three hooks are needed. Extend `AbstractMiddleware` when only one or two hooks are needed; its default implementations are no-ops.
+
+### Hook order
+
+If middleware is registered as `Authentication`, `Logging`, and `Cache`, the lifecycle order is:
+
+| Phase | Execution order |
+|---|---|
+| `before()` | Authentication → Logging → Cache |
+| `after()` | Cache → Logging → Authentication |
+| `onError()` | Cache → Logging → Authentication |
+
+Use `addMiddleware()` to append middleware or `prependMiddleware()` to put it at the beginning of the pipeline. Use `removeMiddleware($instance)` or `removeMiddleware(FullyQualifiedClassName::class)` to remove it. `clearMiddlewares()` removes all middleware, and `getMiddlewares()` returns the currently registered instances. `withMiddleware()` is an alias for `addMiddleware()`.
+
+Middleware registration methods mutate the existing Client and return the same Client instance. Calling `prependMiddleware()` for an already registered instance moves it to the beginning of the stack instead of registering it twice. The `UltraRequest` facade exposes the same registration and removal methods.
+
+### RequestContext
+
+Every logical request receives its own `RequestContext`, including each item in `sendMany()`. The context survives the request's redirect chain and provides:
+
+- `getOriginalRequest()` — the original RequestInterface supplied by the caller.
+- `getRequest()` / `setRequest()` — the current request. Use this to replace a request before it is sent.
+- `getKey()` — the original array key for a concurrent request, or `null` for `send()`.
+- `setAttribute()`, `getAttribute()`, `hasAttribute()`, `removeAttribute()`, and `getAttributes()` — request-local storage shared between middleware hooks.
+- `respond(HttpResponse $response)` — short-circuit the network request and supply a response directly.
+
+Store per-request state in the context, not in properties on a middleware instance. One middleware instance is shared by all requests in a concurrent batch.
+
+### Short-circuiting and caching
+
+A middleware can return a response without opening a cURL handle. This is useful for cache hits, mocks, request blocking, and local routing:
+
+```php
+use Amirxd\UltraRequest\Middleware\AbstractMiddleware;
+use Amirxd\UltraRequest\Middleware\RequestContext;
+use Amirxd\UltraRequest\Response\HttpResponse;
+
+$cacheMiddleware = new class extends AbstractMiddleware {
+    public function before(RequestContext $context): void
+    {
+        $cachedBody = $this->findCachedBody($context->getRequest()->getUrl());
+
+        if ($cachedBody !== null) {
+            $context->respond(new HttpResponse(
+                $cachedBody,
+                "HTTP/1.1 200 OK\r\nX-Cache: HIT\r\n\r\n",
+                200
+            ));
+        }
+    }
+
+    private function findCachedBody(string $url): ?string
+    {
+        // Look up the URL in your cache store.
+        return null;
+    }
+};
+
+$client->addMiddleware($cacheMiddleware);
+```
+
+Only middleware whose `before()` hook has been entered participates in the response or error phase of a short-circuited request.
+
+### Error handling and recovery
+
+An `onError()` hook receives transport failures and exceptions raised by middleware hooks. Return the same error or a replacement `Throwable` to keep the request failed. Return an `HttpResponse` to recover it:
+
+```php
+public function onError(RequestContext $context, Throwable $error): HttpResponse|Throwable
+{
+    if ($error instanceof \RuntimeException) {
+        return new HttpResponse(
+            '{"available":false}',
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n",
+            200
+        );
+    }
+
+    return $error;
+}
+```
+
+A response produced by `onError()` is a recovery result; the normal `after()` hooks are not run again for that recovered response. Error hooks themselves run in reverse order. If an error hook throws, its new exception becomes the error passed to the next outer error hook.
+
+### Concurrent requests
+
+The same middleware stack is applied independently to each request in `sendMany()` and `sendPool()`:
+
+- `before()` runs once for each logical request before its transfer is scheduled.
+- `after()` runs once when that request's final response arrives, after its redirect chain has finished. It runs as each request completes, not only after the entire pool has drained.
+- `onError()` runs for an individual request failure. It can recover one failed item without cancelling other transfers.
+- Each request has an independent context and attribute map.
+- A middleware short-circuit does not consume a concurrency slot or create a cURL handle.
+
+The pipeline is lifecycle-based rather than a synchronous `next($request)` handler chain. A traditional synchronous handler chain would block while waiting for its downstream handler and would undermine `curl_multi` concurrency. The lifecycle contract keeps the same middleware behavior available to both execution modes.
+
+### Middleware example
+
+A ready-to-adapt logging example is included at `examples/Middleware/LoggingMiddleware.php`. It accepts any callable logger and does not require a PSR logging package. Because the example is outside the production PSR-4 namespace, load it explicitly when trying it:
+
+```php
+require __DIR__ . '/examples/Middleware/LoggingMiddleware.php';
+
+$client->addMiddleware(new \Example\Middleware\LoggingMiddleware(
+    static function (string $event, array $context): void {
+        error_log($event . ' ' . json_encode($context, JSON_UNESCAPED_SLASHES));
+    }
+));
+```
+
+## Cookies
+
+```php
+use Amirxd\UltraRequest\Cookie\CookieJar;
+
+$jar = new CookieJar(__DIR__ . '/private/cookies.json', true);
+$jar->setCookieForUrl('https://example.com/account/login', 'session', 'abc123', [
+    'httpOnly' => true,
     'secure' => true,
-    'httpOnly' => true
+    'sameSite' => 'Lax',
 ]);
 
-// Get all cookies as header string
-$cookieHeader = $cookieJar->toHeader();
+$client->withCookieJar($jar);
+$response = $client->send(Request::get('https://example.com/account/home'));
 ```
 
-### Cookie Persistence
+`setCookieForUrl()` creates a host-only cookie and calculates the default path from the supplied URL. When using `setCookie()` directly, provide a `domain` option; a cookie without an origin is never treated as a wildcard cookie. Cookies received from servers are scoped to the response host when the server omits `Domain`, and explicit `Domain` attributes are checked against that host. The built-in public-suffix denial list is conservative and covers common suffixes; it is not a full, automatically updated Public Suffix List. For tenant-hosted services, prefer host-only cookies.
+
+Cookie storage files contain session credentials. Keep them outside public web directories; the library attempts to restrict their permissions to the current user.
+
+Use `CookieJar::match($url)` for URL-specific cookies. `toHeader()` is a convenience method that returns all non-expired cookies and is not suitable for sending to an arbitrary host.
+
+## Proxies
 
 ```php
-<?php
-
-// Save cookies to file
-$cookieJar = new CookieJar('cookies.json');
-$cookieJar->setCookie('user', 'john_doe');
-
-// Load existing cookies
-$cookieJar = new CookieJar('cookies.json', true);
-echo $cookieJar->getCookie('user')->getValue(); // john_doe
-```
-
----
-
-## 🌐 Proxy Support
-
-### HTTP/HTTPS Proxy
-
-```php
-<?php
-
-use Amirxd\UltraRequest\Proxy\Proxy;
-use Amirxd\UltraRequest\Client\Client;
-
-$proxy = new Proxy('http://proxy.example.com:8080');
-
-// With authentication
-$proxy = (new Proxy('http://proxy.example.com:8080'))
-    ->withAuth('username', 'password');
-
-$client = (new Client())->setProxy($proxy);
-```
-
-### SOCKS Proxy
-
-```php
-<?php
-
 use Amirxd\UltraRequest\Proxy\Proxy;
 
-// SOCKS5 proxy
-$proxy = new Proxy('socks5://socks.example.com:1080');
-
-// SOCKS4 proxy
-$proxy = new Proxy('socks4://socks.example.com:1080');
-
-$client = (new Client())->setProxy($proxy);
+$proxy = new Proxy('socks5://127.0.0.1:1080');
+$proxy->withAuth('username', 'password');
+$client->setProxy($proxy);
 ```
 
-### Proxy String Formats
+Supported schemes: `http`, `https`, `socks4`, and `socks5`. The string representation of a Proxy intentionally omits credentials.
+
+## Redirect behavior
+
+Automatic cURL redirects are disabled. The client follows 301, 302, 303, 307, and 308 responses itself so it can enforce the redirect limit, handle relative `Location` values, and process cookies at each hop.
+
+- 303 changes non-HEAD requests to GET.
+- 301/302 change POST to GET.
+- 307/308 preserve the method and body.
+- The `Host` header is regenerated for every destination.
+- Authorization, Cookie, API-key, token, and similar sensitive headers are not forwarded to a different origin. Client authentication and credential-bearing cURL options are also withheld cross-origin.
 
 ```php
-// All these formats are supported:
-$proxy = new Proxy('http://proxy.example.com:8080');
-$proxy = new Proxy('proxy.example.com:8080'); // Defaults to HTTP
-$proxy = new Proxy('https://proxy.example.com:443');
-$proxy = new Proxy('socks5://user:pass@socks.example.com:1080');
-```
-
----
-
-## 📥 Advanced File Downloader
-
-### Basic Download
-
-```php
-<?php
-
-use Amirxd\UltraRequest\File\Downloader;
-use Amirxd\UltraRequest\Client\Client;
-
-$downloader = new Downloader(
-    'https://example.com/file.zip',
-    '/path/to/save/file.zip'
-);
-
-$client = new Client();
-$client->download($downloader);
-```
-
-### Download with Progress Bar (Console)
-
-```php
-<?php
-
-use Amirxd\UltraRequest\File\Downloader;
-use Amirxd\UltraRequest\Client\Client;
-
-$downloader = new Downloader(
-    'https://example.com/large-file.zip',
-    './downloads/file.zip'
-);
-
-// Enable console progress bar
-$downloader = $downloader->withConsoleProgress(50);
-
-$client = new Client();
-$client->download($downloader);
-
-// Output: [████████████████████░░░░░░░] 75.0% | 15.3 MB / 20.4 MB | 2.1 MB/s | ETA: 00:24
-```
-
-### Download with Custom Progress Callback
-
-```php
-<?php
-
-use Amirxd\UltraRequest\File\Downloader;
-use Amirxd\UltraRequest\Client\Client;
-
-$downloader = new Downloader(
-    'https://example.com/file.zip',
-    './downloads/file.zip'
-);
-
-$downloader = $downloader->withProgress(function($progress) {
-    echo sprintf(
-        "Downloaded: %s / %s (%.1f%%) | Speed: %s | ETA: %s\n",
-        $progress['downloaded_formatted'],
-        $progress['total_formatted'],
-        $progress['percent'],
-        $progress['speed_formatted'],
-        $progress['eta_formatted']
-    );
-});
-
-$client = new Client();
-$client->download($downloader);
-```
-
-### Resume Download
-
-```php
-<?php
-
-use Amirxd\UltraRequest\File\Downloader;
-use Amirxd\UltraRequest\Client\Client;
-
-$downloader = new Downloader(
-    'https://example.com/large-file.zip',
-    './downloads/file.zip'
-);
-
-// Enable resume support
-$downloader = $downloader->withResume(true);
-
-$client = new Client();
-$client->download($downloader); // Will resume if file exists
-```
-
-### Download with Retry Mechanism
-
-```php
-<?php
-
-use Amirxd\UltraRequest\File\Downloader;
-use Amirxd\UltraRequest\Client\Client;
-
-$downloader = new Downloader(
-    'https://example.com/file.zip',
-    './downloads/file.zip'
-);
-
-// Retry up to 3 times with 2-second delay between attempts
-$downloader = $downloader->withRetries(3, 2);
-
-$client = new Client();
-$client->download($downloader);
-```
-
-### Complete Download Example
-
-```php
-<?php
-
-use Amirxd\UltraRequest\File\Downloader;
-use Amirxd\UltraRequest\Client\Client;
-
-try {
-    $downloader = new Downloader(
-        'https://example.com/large-file.zip',
-        './downloads/large-file.zip'
-    );
-    
-    $downloader = $downloader
-        ->withResume(true)
-        ->withConsoleProgress(50)
-        ->withRetries(3, 2)
-        ->withOverwrite(false) // Don't overwrite if exists (unless resuming)
-        ->withHeader('User-Agent', 'PHP Ultra Request')
-        ->withChunkSize(1024 * 1024 * 2); // 2MB chunks
-    
-    $client = new Client();
-    $success = $client->download($downloader);
-    
-    if ($success) {
-        echo "\n✅ Download completed!\n";
-    }
-    
-} catch (\Exception $e) {
-    echo "\n❌ Download failed: " . $e->getMessage() . "\n";
-}
-```
-
----
-
-## ⚙️ Advanced Client Configuration
-
-### Custom Headers
-
-```php
-<?php
-
-use Amirxd\UltraRequest\Client\Client;
-use Amirxd\UltraRequest\Request\Request;
-
-$client = new Client();
-$client = $client->withAuth(function($auth) {
-    $auth->bearer('your-token');
-});
-
-$request = Request::get('https://api.example.com/users')
-    ->withHeader('X-Custom-Header', 'custom-value')
-    ->withHeader('Accept', 'application/json');
-
+$request = Request::get('https://example.com/start')->withMaxRedirects(5);
 $response = $client->send($request);
 ```
 
-### Timeout Configuration
+## File downloads
 
 ```php
-<?php
+use Amirxd\UltraRequest\File\Downloader;
 
-use Amirxd\UltraRequest\Client\Client;
-use Amirxd\UltraRequest\Request\Request;
+$downloader = new Downloader('https://example.com/large-file.zip', __DIR__ . '/downloads/large-file.zip');
+$downloader->withResume(true)
+           ->withRetries(3, 2)
+           ->withChunkSize(256 * 1024)
+           ->withProgress(function (array $progress): void {
+               printf("%.1f%% - %s / %s\n", $progress['percent'], $progress['downloaded_formatted'], $progress['total_formatted']);
+           });
 
-$client = (new Client())
-    ->withTimeout(60)           // Total timeout: 60 seconds
-    ->withConnectTimeout(10);   // Connection timeout: 10 seconds
-
-$response = $client->send(Request::get('https://slow-api.example.com'));
+$client->download($downloader);
 ```
 
-### SSL Verification Control
+The downloader writes to `destination.part` and renames it to the final path only after completion. Resume requests use `Range` and `Accept-Encoding: identity`; the server's `Content-Range` start, end, total, and actual bytes written are validated. If a server ignores `Range` and returns 200, the partial file is truncated and restarted rather than appended. Servers that return several 206 segments are followed until the advertised total size is reached.
+
+`withRetries($attempts, $delaySeconds)` sets the maximum number of total attempts. Resume is available only when `withResume(true)` is enabled and a `.part` file exists. The console progress bar is opt-in with `withConsoleProgress()`. The Downloader currently uses its dedicated streaming transport path and does not run the regular `MiddlewareInterface` hooks; its file-transfer lifecycle needs separate streaming-oriented hooks rather than a buffered `HttpResponse` pipeline.
+
+## Response helpers
 
 ```php
-<?php
-
-use Amirxd\UltraRequest\Client\Client;
-
-// Enable SSL verification (default, recommended for production)
-$client = (new Client())->withSSL(true);
-
-// Disable SSL verification (useful for development)
-$client = (new Client())->withSSL(false);
+$response->getStatusCode();
+$response->isSuccessful();
+$response->getHeader('Content-Type');
+$response->getHeaders();
+$response->getHeaderValues('Set-Cookie'); // all occurrences
+$response->getJson();
+$response->getJsonOrFail(); // throws JsonException on invalid JSON
+$response->getJsonError();
+$response->getInfo(); // cURL transfer info
 ```
 
-### Custom cURL Options
+`getHeaders()` keeps a simple associative representation; when a header can occur more than once, use `getHeaderValues()`.
+
+## Custom cURL options
 
 ```php
-<?php
-
-use Amirxd\UltraRequest\Client\Client;
-use Amirxd\UltraRequest\Request\Request;
-
-$client = (new Client())
-    ->withCurlOption(CURLOPT_USERAGENT, 'MyCustomBot/1.0')
-    ->withCurlOption(CURLOPT_MAXREDIRS, 5)
-    ->withCurlOption(CURLOPT_REFERER, 'https://google.com');
-
-$response = $client->send(Request::get('https://example.com'));
+$client->withCurlOption(CURLOPT_USERAGENT, 'MyApplication/1.0');
+$client->withCurlOption(CURLOPT_REFERER, 'https://example.com/');
 ```
 
----
+Options that override the request URL, header/cookie handling, redirect handling, response buffering, or internal streaming callbacks are reserved by the library and rejected. Credential-bearing cURL options are not applied to a different origin during redirects.
 
-## 🔍 Response Handling
+## Tests
 
-### Response Methods
-
-```php
-<?php
-
-use Amirxd\UltraRequest\UltraRequest;
-
-$http = new UltraRequest();
-$response = $http->get('https://api.example.com/data');
-
-// Get status code
-$statusCode = $response->getStatusCode(); // 200
-
-// Get response body
-$body = $response->getBody(); // Raw string
-
-// Get JSON decoded data
-$data = $response->getJson(true); // Associative array
-$data = $response->getJson(false); // Object
-
-// Check response status
-if ($response->isSuccessful()) {
-    // 2xx responses
-} elseif ($response->isRedirect()) {
-    // 3xx responses
-} elseif ($response->isClientError()) {
-    // 4xx responses
-} elseif ($response->isServerError()) {
-    // 5xx responses
-}
-
-// Get specific header
-$contentType = $response->getHeader('Content-Type');
-$allHeaders = $response->getHeaders();
-
-// Get cURL info
-$info = $response->getInfo(); // URL, total_time, etc.
-```
-
----
-
-## 🧪 Testing
-
-### Run Tests
+Run the local test suite:
 
 ```bash
-# Download a test file
-php tests/DownloadTest.php
-
-# Run the basic test script
-php tests/UltraRequestTest.php
+php tests/run.php
 ```
 
-### Example Test Script
+The suite uses a deterministic cURL test double, so logic tests can run even on a development machine without `ext-curl`. Real HTTP integration still requires the cURL extension and a reachable test server.
 
-```php
-<?php
-// tests/UltraRequestTest.php
+## Project structure
 
-require_once 'vendor/autoload.php';
+```text
+src/
+├── Auth/
+├── Client/
+│   ├── MultiRequestExecutor.php
+│   ├── MultiRequestStep.php
+│   └── RequestPool.php
+├── Cookie/
+├── File/
+├── Middleware/
+│   ├── AbstractMiddleware.php
+│   ├── MiddlewareInterface.php
+│   ├── MiddlewarePipeline.php
+│   └── RequestContext.php
+├── Proxy/
+├── Request/
+├── Response/
+└── UltraRequest.php
 
-use Amirxd\UltraRequest\UltraRequest;
+examples/
+└── Middleware/
+    └── LoggingMiddleware.php
 
-echo "🧪 Testing UltraRequest...\n\n";
-
-try {
-    $http = new UltraRequest();
-    
-    // Test GET
-    echo "📡 Testing GET request...\n";
-    $response = $http->get('https://httpbin.org/get');
-    echo "✅ Status: " . $response->getStatusCode() . "\n";
-    
-    // Test POST
-    echo "\n📡 Testing POST request...\n";
-    $response = $http->post('https://httpbin.org/post', 
-        json_encode(['test' => 'success']),
-        ['Content-Type' => 'application/json']
-    );
-    echo "✅ Status: " . $response->getStatusCode() . "\n";
-    
-    echo "\n✨ All tests passed!\n";
-    
-} catch (\Exception $e) {
-    echo "❌ Error: " . $e->getMessage() . "\n";
-    exit(1);
-}
+tests/
+└── run.php
 ```
 
----
+## License
 
-## 📁 Directory Structure
-
-```
-php-ultra-request/
-├── src/
-│   ├── Auth/
-│   │   ├── ApiKeyAuth.php
-│   │   ├── AuthInterface.php
-│   │   ├── AuthManager.php
-│   │   ├── BasicAuth.php
-│   │   └── BearerAuth.php
-│   ├── Client/
-│   │   └── Client.php
-│   ├── Cookie/
-│   │   ├── Cookie.php
-│   │   ├── CookieInterface.php
-│   │   ├── CookieJar.php
-│   │   └── CookieJarInterface.php
-│   ├── File/
-│   │   └── Downloader.php
-│   ├── Proxy/
-│   │   ├── Proxy.php
-│   │   └── ProxyInterface.php
-│   ├── Request/
-│   │   ├── Request.php
-│   │   └── RequestInterface.php
-│   ├── Response/
-│   │   ├── HttpResponse.php
-│   │   └── ResponseInterface.php
-│   └── UltraRequest.php
-├── tests/
-│   └── UltraRequestTest.php
-├── examples/
-│   ├── basic-usage.php
-│   ├── download-example.php
-│   └── cookie-example.php
-├── composer.json
-├── LICENSE
-├── README.md
-└── .gitignore
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Coding Standards
-
-- Follow PSR-12 coding standards
-- Add tests for new features
-- Update documentation accordingly
-- Ensure PHP 8.0+ compatibility
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- Built with PHP's powerful cURL extension
-- Inspired by Guzzle HTTP Client
-- RFC 7231 compliant for HTTP/1.1
-
----
-
-## 📫 Contact
-
-- **Author**: Amirxd
-- **Email**: amirxd4488.pm@example.com
-- **GitHub**: [github.com/amirxd](https://github.com/amirxd)
-
----
-
-## 🌟 Star the Project
-
-If you find this library useful, please consider giving it a ⭐ on GitHub!
-
----
-
-**Made with ❤️ by Amirxd**
+MIT. See [LICENSE](LICENSE).
